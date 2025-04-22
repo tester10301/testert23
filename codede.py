@@ -3,11 +3,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+# from xbbg import blp
 from statsmodels.tsa.stattools import adfuller
 import statsmodels.api as sm
 from datetime import datetime
 import plotly.graph_objects as go
-
+import traceback
 # Set page configuration
 st.set_page_config(page_title="HedgeFinder", page_icon=":chart_with_upwards_trend:", layout="wide")
 
@@ -112,6 +113,29 @@ def filter_stocks(df, ticker, sector='Y', domicility='Y'):
     
     return filtered_df
 
+# def fetch_stock_data(tickers, start_date, end_date):
+#     """Fetch historical stock data using yfinance"""
+#     if isinstance(tickers, str):
+#         tickers = [tickers]
+        
+#     start_dt = datetime.strptime(start_date, '%Y-%m-%d').strftime('%Y%m%d')
+#     end_dt = datetime.strptime(end_date, '%Y-%m-%d').strftime('%Y%m%d')
+    
+#     data = {}
+#     for ticker in tickers:
+#         try:
+#             # Request historical data from Bloomberg
+#             stock_data = blp.bdh(ticker, 'PX_LAST', start_dt, end_dt, Fill='P', Days='T')
+            
+#             if not stock_data.empty:
+#                 # Rename column to match our existing code expectations
+#                 stock_data.columns = [c.replace('PX_LAST', 'Adj Close') for c in stock_data.columns]
+#                 data[ticker] = stock_data['Adj Close']
+#         except Exception as e:
+#             st.error(f"Error fetching Bloomberg data for {ticker}: {e}")
+    
+#     return data
+
 def fetch_stock_data(tickers, start_date, end_date):
     """Fetch historical stock data using yfinance"""
     if isinstance(tickers, str):
@@ -128,7 +152,6 @@ def fetch_stock_data(tickers, start_date, end_date):
             st.error(f"Error fetching data for {ticker}: {e}")
     
     return data
-
 def find_best_hedge(data, target_ticker, filtered_tickers, action='BUY', max_results=5):
     """Find the best hedge stocks based on multiple metrics"""
     if target_ticker not in data:
@@ -137,11 +160,11 @@ def find_best_hedge(data, target_ticker, filtered_tickers, action='BUY', max_res
     target_prices = data[target_ticker]
     results = []
     
-    for ticker in filtered_tickers:
-        if ticker not in data or ticker == target_ticker:
+    for hedge_ticker in filtered_tickers:
+        if hedge_ticker not in data or hedge_ticker == target_ticker:
             continue
             
-        hedge_prices = data[ticker]
+        hedge_prices = data[hedge_ticker]
         
         # Make sure both price series have the same dates
         common_dates = target_prices.index.intersection(hedge_prices.index)
@@ -258,158 +281,6 @@ def find_best_hedge(data, target_ticker, filtered_tickers, action='BUY', max_res
     results.sort(key=lambda x: x['score'], reverse=True)
     return results[:max_results] if results else []
 
-def plot_price_ratio(data, target_ticker, hedge_tickers, hedge_ratios):
-    """Create a plot showing the price ratio between target and hedge basket"""
-    if not hedge_tickers or target_ticker not in data:
-        return None
-        
-    # Get the target price data
-    target_prices = data[target_ticker]
-    
-    # Ensure target_prices is a Series
-    if isinstance(target_prices, pd.DataFrame):
-        target_prices = target_prices.iloc[:, 0]
-        
-    # Create hedge basket
-    hedge_components = []
-    
-    # For each hedge ticker, prepare its component for the basket
-    for i, ticker in enumerate(hedge_tickers):
-        if ticker in data and hedge_ratios[i] != 0:  # Skip if hedge ratio is zero
-            # Get the hedge stock prices and ensure it's a Series
-            hedge_prices = data[ticker]
-            if isinstance(hedge_prices, pd.DataFrame):
-                hedge_prices = hedge_prices.iloc[:, 0]
-                
-            # Calculate the weighted prices
-            weighted_hedge = hedge_prices * hedge_ratios[i]
-            hedge_components.append(weighted_hedge)
-    
-    # If no valid hedge components, return None
-    if not hedge_components:
-        return None
-        
-    # Find common dates across all series
-    all_series = [target_prices] + hedge_components
-    common_dates = all_series[0].index
-    
-    for series in all_series[1:]:
-        common_dates = common_dates.intersection(series.index)
-    
-    # If no common dates, return None
-    if len(common_dates) == 0:
-        return None
-        
-    # Align all series to common dates
-    target_aligned = target_prices.loc[common_dates]
-    
-    # Sum all hedge components that have been aligned
-    hedge_basket = pd.Series(0, index=common_dates)
-    for component in hedge_components:
-        component_aligned = component.loc[common_dates]
-        hedge_basket = hedge_basket.add(component_aligned)
-    
-    # Debug information to help diagnose issues
-    print(f"Target values: {target_aligned.head()}")
-    print(f"Hedge basket values: {hedge_basket.head()}")
-    
-    # Exclude zeros from hedge_basket to avoid division by zero
-    mask = (hedge_basket != 0) & (~hedge_basket.isna()) & (~target_aligned.isna())
-    
-    # Check if mask is empty
-    if not mask.any():
-        print("No valid data points after filtering zeros and NaNs")
-        return None
-        
-    # Calculate price ratio
-    price_ratio = target_aligned[mask] / hedge_basket[mask]
-    
-    # Check if price_ratio is empty or all NaN
-    if len(price_ratio) == 0 or price_ratio.isna().all():
-        print("Price ratio is empty or all NaN")
-        return None
-    
-    # Remove any remaining NaNs
-    price_ratio = price_ratio.dropna()
-    
-    if len(price_ratio) == 0:
-        print("No data points after dropping NaNs")
-        return None
-    
-    # Calculate statistics for the ratio
-    mean = price_ratio.mean()
-    std_dev = price_ratio.std()
-    
-    print(f"Price ratio mean: {mean}, std dev: {std_dev}")
-    print(f"Price ratio has {len(price_ratio)} valid points")
-    
-    # Create the plot
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=price_ratio.index,
-        y=price_ratio.values,
-        mode='lines', 
-        name='Price Ratio',
-        line=dict(color='blue', width=2)
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=price_ratio.index,
-        y=[mean] * len(price_ratio),
-        mode='lines', 
-        name='Mean',
-        line=dict(color='green', width=1)
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=price_ratio.index,
-        y=[mean + std_dev] * len(price_ratio),
-        mode='lines', 
-        name='+1 Std Dev',
-        line=dict(color='red', width=1, dash='dot')
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=price_ratio.index,
-        y=[mean - std_dev] * len(price_ratio),
-        mode='lines', 
-        name='-1 Std Dev',
-        line=dict(color='red', width=1, dash='dot')
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=price_ratio.index,
-        y=[mean + (2 * std_dev)] * len(price_ratio),
-        mode='lines', 
-        name='+2 Std Dev',
-        line=dict(color='purple', width=1, dash='dot')
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=price_ratio.index,
-        y=[mean - (2 * std_dev)] * len(price_ratio),
-        mode='lines', 
-        name='-2 Std Dev',
-        line=dict(color='purple', width=1, dash='dot')
-    ))
-    
-    # Title and labels
-    fig.update_layout(
-        title={
-            'text': "Target/Hedge Basket Price Ratio",
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top'
-        },
-        xaxis_title="Date",
-        yaxis_title="Price Ratio",
-        legend_title="Legend",
-        hovermode="x unified",
-        template="plotly_white"
-    )
-    
-    return fig
 
 # Title
 st.title(":chart: HedgeFinder")
@@ -471,6 +342,7 @@ if st.button('Find Hedge Basket'):
     if not ticker:
         st.error("Please enter a stock ticker.")
     else:
+        original_ticker = ticker
         with st.spinner('Finding the best hedge basket...'):
             try:
                 # Use the df that was already loaded above
@@ -533,17 +405,269 @@ if st.button('Find Hedge Basket'):
                                     hedge_tickers = [r['ticker'] for r in results]
                                     hedge_ratios = [r['hedge_ratio'] for r in results]
                                     
-                                    fig = plot_price_ratio(historical_data, ticker, hedge_tickers, hedge_ratios)
-                                    if fig:
-                                        st.subheader("Price Ratio Analysis")
-                                        st.plotly_chart(fig, use_container_width=True)
+                                    # fig = plot_price_ratio(historical_data, ticker, hedge_tickers, hedge_ratios)
+                                    
+                                                                        # After finding the best hedge stocks, add this code to create and display the chart
+
+                                    # Extract the selected hedge stocks
+                                    sel_lst = []
+                                    for i, result in enumerate(results):
+                                        if i < num_hedge_stocks:  # Use the top n stocks based on your parameter
+                                            sel_lst.append(result['ticker'])
+
+                                    if sel_lst:
+                                        # Get the last price for each hedge stock
+                                        h = {}
+                                        for ticker in sel_lst:
+                                            if ticker in historical_data:
+                                                h[ticker] = historical_data[ticker][-1:]
                                         
-                                        st.markdown("""
-                                        **How to interpret the chart:**
-                                        - When the blue line (Price Ratio) is above the mean, the target stock is relatively expensive compared to the hedge basket
-                                        - When below the mean, the target stock is relatively cheap compared to the hedge basket
-                                        - Trading signals often occur when the ratio crosses the standard deviation bands
-                                        """)
+                                        # Get the last price for the target stock
+                                        sp = historical_data[ticker][-1:]
+                                        
+                                        # Create a dictionary to store the price ratio data
+                                        h_data = {}
+                                        d = []
+
+                                        for i in range(len(historical_data[ticker]) - 1, -1, -1):
+                                            try:
+                                                cp = historical_data[ticker].iloc[i]
+                                                dtt = historical_data[ticker].index[i]
+                                                dt = str(dtt)
+                                                h_data[dt] = {'date': dt}
+
+                                                # ✅ Safely extract scalar from sp
+                                                try:
+                                                    if isinstance(sp, pd.DataFrame):
+                                                        sp_val = float(sp.iloc[0, 0])
+                                                    elif isinstance(sp, pd.Series):
+                                                        sp_val = float(sp.iloc[0])
+                                                    else:
+                                                        sp_val = float(sp)
+                                                except Exception as e:
+                                                    st.write(f"Error extracting sp_val: {e}")
+                                                    continue
+
+                                                # 🧼 Skip if cp or sp_val is NaN
+                                                if isinstance(cp, pd.Series):
+                                                    cp = float(cp.iloc[0])
+                                                else:
+                                                    cp = float(cp)
+
+                                                if pd.isna(cp) or pd.isna(sp_val):
+                                                    st.write(f"Skipping index {i} due to NaN in cp or sp_val")
+                                                    continue
+
+                                                cp = float(cp)
+                                                ret = cp * ((cp - sp_val) / sp_val)
+
+                                                ret1 = 0
+                                                count = 0
+
+
+
+                                                for s in sel_lst:
+                                                    try:
+                                                        if s not in historical_data or s not in h:
+                                                            continue
+                                                        if i >= len(historical_data[s]):
+                                                            continue
+
+                                                        cp_s = historical_data[s].iloc[i]
+                                                        sp_s = h[s]
+
+                                                        # Safely extract scalar from sp_s
+                                                        if isinstance(sp_s, pd.DataFrame):
+                                                            sp_s_val = float(sp_s.iloc[0, 0])
+                                                        elif isinstance(sp_s, pd.Series):
+                                                            sp_s_val = float(sp_s.iloc[0])
+                                                        else:
+                                                            sp_s_val = float(sp_s)
+
+                                                        # Safely extract scalar from cp_s
+                                                        if isinstance(cp_s, pd.Series):
+                                                            cp_s = float(cp_s.iloc[0])
+                                                        else:
+                                                            cp_s = float(cp_s)
+
+                                                        # Skip if prices are NaN
+                                                        if pd.isna(cp_s) or pd.isna(sp_s_val):
+                                                            continue
+
+                                                        r1 = cp_s * ((cp_s - sp_s_val) / sp_s_val)
+                                                        ret1 += r1
+                                                        count += 1
+
+                                                    except Exception as e:
+                                                        st.write(f"Error processing hedge {s} at index {i}: {e}")
+                                                        continue
+
+                                                if count == 0:
+                                                    st.write(f"No valid hedge returns at index {i}")
+                                                    continue
+
+                                                ret1 = float(ret1) / count
+
+                                                try:
+                                                    ratio = float(ret) / float(ret1)
+                                                except ZeroDivisionError:
+                                                    ratio = 0
+                                                except Exception as e:
+                                                    st.write(f"Error dividing ret by ret1 at index {i}: {e}")
+                                                    continue
+                                                h_data[dt]['ratio'] = ratio
+                                                d.append(ratio)
+
+                                           
+                                            except Exception as e:
+                                                st.write(f"Final unexpected error at index {i}: {e}")
+                                                st.code(traceback.format_exc())  # 🔍 shows the full traceback
+                                                continue
+
+
+                                        st.write("Collected price ratio points:", len(d), "| Sample:", d[:5])
+                                        # Take the last 21 days if available
+                                        if len(d) > 21:
+                                            d1 = d[-21:]
+                                        else:
+                                            d1 = d.copy()
+                                        
+                                        # Calculate statistics
+                                        import statistics
+                                        
+                                        # Filter out zeros and None values
+                                        d1_filtered = [x for x in d1 if x != 0 and x is not None]
+                                        
+                                        if d1_filtered:
+                                            mean = statistics.mean(d1_filtered)
+                                            std_numpy = np.std(d1_filtered)
+                                            
+                                            # Calculate standard deviation bands
+                                            std_1 = mean + std_numpy
+                                            std_2 = mean + (2 * std_numpy)
+                                            std_3 = mean - std_numpy
+                                            std_4 = mean - (2 * std_numpy)
+                                            
+                                            # Add statistics to each data point
+                                            for i, dt in enumerate(list(h_data.keys())):
+                                                if i < len(d):
+                                                    ratio = d[i]
+                                                    h_data[dt]['ratio'] = ratio
+                                                    h_data[dt]['MEAN'] = mean
+                                                    h_data[dt]['+1STD_DEV'] = std_1
+                                                    h_data[dt]['+2STD_DEV'] = std_2
+                                                    h_data[dt]['-1STD_DEV'] = std_3
+                                                    h_data[dt]['-2STD_DEV'] = std_4
+                                            
+                                            # Create a DataFrame from the dictionary
+                                            df_clean_ret = pd.DataFrame(h_data).T
+                                            
+                                            # Sort the DataFrame by date
+                                            df_clean_ret = df_clean_ret.sort_values(by='date', ascending=True)
+                                            
+                                            # Calculate min and max for y-axis scaling
+                                            # Filter out None/NaN values first
+                                            numeric_columns = ['+2STD_DEV', '+1STD_DEV', 'MEAN', '-1STD_DEV', '-2STD_DEV', 'ratio']
+                                            y_values = []
+                                            for col in numeric_columns:
+                                                if col in df_clean_ret.columns:
+                                                    values = df_clean_ret[col].dropna().tolist()
+                                                    y_values.extend(values)
+                                            
+                                            if y_values:
+                                                y_min = min(y_values) * 0.9
+                                                y_max = max(y_values) * 1.1
+                                                
+                                                # Create the figure
+                                                fig = go.Figure()
+                                                
+                                                # Add ratio line
+                                                fig.add_trace(go.Scatter(
+                                                    x=pd.to_datetime(df_clean_ret['date']),
+                                                    y=df_clean_ret['ratio'],
+                                                    mode='lines', name='Basket Price Ratio',
+                                                    line=dict(color='blue', width=2)
+                                                ))
+                                                
+                                                # Add mean line
+                                                fig.add_trace(go.Scatter(
+                                                    x=pd.to_datetime(df_clean_ret['date']),
+                                                    y=df_clean_ret['MEAN'],
+                                                    mode='lines', name='Mean',
+                                                    line=dict(color='green', width=1)
+                                                ))
+                                                
+                                                # Add standard deviation lines
+                                                fig.add_trace(go.Scatter(
+                                                    x=pd.to_datetime(df_clean_ret['date']),
+                                                    y=df_clean_ret['+1STD_DEV'],
+                                                    mode='lines', name='+1 Std Dev',
+                                                    line=dict(color='red', width=1, dash='dot')
+                                                ))
+                                                
+                                                fig.add_trace(go.Scatter(
+                                                    x=pd.to_datetime(df_clean_ret['date']),
+                                                    y=df_clean_ret['-1STD_DEV'],
+                                                    mode='lines', name='-1 Std Dev',
+                                                    line=dict(color='red', width=1, dash='dot')
+                                                ))
+                                                
+                                                fig.add_trace(go.Scatter(
+                                                    x=pd.to_datetime(df_clean_ret['date']),
+                                                    y=df_clean_ret['+2STD_DEV'],
+                                                    mode='lines', name='+2 Std Dev',
+                                                    line=dict(color='purple', width=1, dash='dot')
+                                                ))
+                                                
+                                                fig.add_trace(go.Scatter(
+                                                    x=pd.to_datetime(df_clean_ret['date']),
+                                                    y=df_clean_ret['-2STD_DEV'],
+                                                    mode='lines', name='-2 Std Dev',
+                                                    line=dict(color='purple', width=1, dash='dot')
+                                                ))
+                                                
+                                                # Update layout
+                                                fig.update_layout(
+                                                    title={
+                                                        'text': "Long Short Basket Price Ratio",
+                                                        'x': 0.5,
+                                                        'xanchor': 'center',
+                                                        'yanchor': 'top'
+                                                    },
+                                                    xaxis_title="Date",
+                                                    yaxis_title="Price Ratio",
+                                                    legend_title="Legend",
+                                                    hovermode="x unified",
+                                                    template="plotly_white",
+                                                    yaxis_range=[y_min, y_max]
+                                                )
+                                                
+                                                # Add a divider
+                                                st.divider()
+                                                
+                                                # Display information about the hedge stocks
+                                                sentence = ", ".join(sel_lst)
+                                                st.write(f"**There are** {len(sel_lst)} **hedge stocks in the basket.**")
+                                                st.write(f"**Chart of price ratio of** {ticker} **and equal weighted basket of filtered hedges** **with positive coefficient: {sentence}.**")
+                                                
+                                                # Display the chart
+                                                st.plotly_chart(fig, use_container_width=True)
+                                                
+                                                # Add interpretation information
+                                                st.markdown("""
+                                                **How to interpret the chart:**
+                                                - When the blue line (Price Ratio) is above the mean, the target stock is relatively expensive compared to the hedge basket
+                                                - When below the mean, the target stock is relatively cheap compared to the hedge basket
+                                                - Trading signals often occur when the ratio crosses the standard deviation bands
+                                                """)
+                                            else:
+                                                st.write("**Insufficient data to calculate price ratios.**")
+                                        else:
+                                            st.write("**Not enough valid data points to calculate statistics.**")
+                                    else:
+                                        st.write("**There are no hedge stocks with positive coefficient.**")
+
+
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
                 # Add detailed error information for debugging
